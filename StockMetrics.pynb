@@ -1,0 +1,396 @@
+import pandas as pd
+import numpy as np
+import statsmodels.api as sm
+
+#Quantitative Analysis Functions
+
+
+
+def TR(row, axis = 1):
+    
+    H = row['High']
+    L = row['Low']
+    C = row['Close']
+    yC = row['yC']
+    
+    return max((H-L), abs(H-yC), abs(L-yC))
+
+
+
+def DM(row, axis = 1, d = 'PDM'):
+    
+    
+    tH = row['High']
+    yH = row['yH']
+    
+    tL = row['Low']
+    yL  = row['yL']
+    
+    moveUp = tH - yH
+    moveDown = yL - tL
+    
+    #calculate PDM
+    if moveUp > 0 and moveUp > moveDown:
+        PDM = moveUp
+    else:
+        PDM = 0
+    
+   #calculate NDM
+    if moveDown > 0 and moveDown > moveUp:
+        NDM = moveDown
+    else:
+        NDM = 0
+        
+    if d == 'PDM':
+        return PDM
+    else:
+        return NDM
+
+    
+def Smoothed(Metric, period, ADX = False):
+    
+    if ADX == False:
+        Base = Metric.rolling(window = period).mean()[period-1]
+    else:
+        Base = Metric.rolling(window = period).mean()[period*2 - 1]
+    
+    Metric = list(Metric)
+    period = period -1
+    lstlen = len(Metric)
+    lstSmoothed = np.empty(lstlen)
+
+    for i in range(lstlen):
+
+        if i < period:
+            lstSmoothed[i] = 0
+        elif i == period:
+            lstSmoothed[i] = Base
+        else:
+            lstSmoothed[i] = (lstSmoothed[i-1] * period + Metric[i])/(period + 1)
+
+
+    return lstSmoothed
+
+def EMA(Metric, period):
+    
+    multiplier = 2/(period+1)
+    Base = Metric.reset_index(drop = True)
+    Base = Base.rolling(window = period).mean()[period - 1]
+    
+    Metric = list(Metric)
+    period = period -1
+    lstlen = len(Metric)
+    lstEMA = np.empty(lstlen)
+
+    for i in range(lstlen):
+
+        if i < period:
+            lstEMA[i] = 0
+        elif i == period:
+            lstEMA[i] = Base
+        else:
+            lstEMA[i] = Metric[i] * multiplier + lstEMA[i-1] * (1-multiplier)
+
+
+    return lstEMA
+
+
+def OLS_Slope(y, lookback = 14):
+    X = np.arange(0,lookback,1)
+    X = sm.add_constant(X)
+    results = sm.OLS(y,X).fit()
+    sl = results.params[1]
+    
+    
+                
+    return sl
+
+def OLS_R(y, lookback = 14):
+    X = np.arange(0,lookback,1)
+    X = sm.add_constant(X)
+    results = sm.OLS(y,X).fit()
+  
+    r2 = results.rsquared
+                
+   
+                
+    return r2
+
+
+def M(row, axis = 1):
+    h = row['High']
+    l = row['Low']
+    c = row['Close']
+    v = row['Volume']
+    
+    n = ((c - l) - (h - c)) / (h - l)
+    return n * v 
+
+def Momentum(dfPrices):
+    m = []
+    tickers = list(dfPrices.Ticker.value_counts().index)
+    dfPrices = dfPrices.set_index('Date')
+    for t in tickers:
+       # try:
+            
+            df = dfPrices[dfPrices.Ticker == t]
+            df =df.drop(columns = 'Ticker')
+            
+            
+            df['yH'] = df[['High']].shift(1)
+            df['yL'] = df[['Low']].shift(1)
+            df['yC'] = df[['Close']].shift(1)
+            
+
+
+            df['PDM'] = df.apply(DM, axis = 1, d='PDM')
+            df['NDM'] = df.apply(DM, axis = 1,d = 'NDM')
+            df['TR'] = df.apply(TR, axis = 1)
+            df['M'] = df.apply(M, axis = 1)
+            df['CMF'] = df.M.rolling(window = 20).sum() / df.Volume.rolling(window = 20).sum()
+            
+            ATR = Smoothed(df['TR'], 14)
+            PDM_Smooth = Smoothed(df['PDM'], 14)
+            NDM_Smooth =Smoothed(df['NDM'], 14)
+            DI_Plus = PDM_Smooth/ATR * 100
+            DI_Neg = NDM_Smooth/ATR * 100
+            DI_Index =abs(DI_Plus - DI_Neg)/abs(DI_Plus+ DI_Neg) * 100
+            ADX =Smoothed(pd.Series(DI_Index), 14, ADX = True)
+            
+
+            dfATR = pd.DataFrame(ATR, index = df.index, columns = ['ATR'])
+            dfDI_Plus = pd.DataFrame(DI_Plus, index = df.index, columns = ['DI_Plus'])
+            dfDI_Neg = pd.DataFrame(DI_Neg, index = df.index, columns = ['DI_Neg'])
+            ADX = pd.DataFrame(ADX, index = df.index, columns = ['ADX'])
+            dfNew = pd.concat([df,dfATR, dfDI_Plus, dfDI_Neg, ADX], axis = 1)
+
+            dfNew = dfNew[['Close', 'DI_Plus', 'DI_Neg', 'ADX', 'CMF']]
+            
+            dfNew['DI_Plus_Slope'] = dfNew.DI_Plus.rolling(14).apply(OLS_Slope)
+            dfNew['DI_Plus_R'] = dfNew.DI_Plus.rolling(14).apply(OLS_R)
+
+            
+            dfNew['SMA'] = dfNew['Close'].rolling(window = 20).mean()
+            dfNew['UpperB'] = dfNew.SMA + dfNew['Close'].rolling(window = 20).agg(np.std, ddof = 0) * 2
+            dfNew['LowerB'] = dfNew.SMA - dfNew['Close'].rolling(window = 20).agg(np.std, ddof = 0) * 2
+
+            #dfNew['EMA_Five'] = EMA(dfNew.Close, 5)
+            dfNew['Off_SMA'] = (dfNew.Close - dfNew.SMA)/dfNew.SMA * 100
+            dfNew['Off_LB'] = (dfNew.Close - dfNew.LowerB)/dfNew.LowerB * 100
+            dfNew['Symbol'] = t
+            
+           
+            
+            m.append(dfNew)
+        #except:
+         #   print(t, ' not found')
+            
+    
+    return pd.concat(m)
+
+def fundamental(dfFund, dfanalyst, dfquant, earnings_cal):
+
+#import datasets from cleaning
+
+
+    dfquant = dfquant.rename(columns = {'Symbol':'Ticker'})
+    dfFund['Key'] = dfFund[['index','Ticker']].astype(str).apply(lambda x: '_'.join(x), axis=1)
+
+    #use prior year fundmentals to avoid future bias in model.
+    #note we're pulling based on year - 1
+    dfquant['Year'] = pd.DatetimeIndex(dfquant['Date']).year - 1
+    dfquant['Key'] = dfquant[['Year','Ticker']].astype(str).apply(lambda x: '_'.join(x), axis=1)
+
+    #filter specific fields from fundamental sheet
+    fields = ['Key','eps', 'ROE', 'Sector','D2C','epsgrowth', 'Sales', 'Shares']
+    dfFund = dfFund[fields]
+
+    #replace inf values from my ROE calculation
+    dfFund['ROE'] = dfFund.ROE.replace([np.inf, -np.inf], 0)
+
+
+    #pull percent buy and ticker from the analyst rating data source
+    dfRating = dfanalyst[['Symbol', 'Percent_Buy']]
+    dfRating.columns = ['Ticker', 'Percent_Buy']
+
+
+    #merge everyone together
+
+    df = pd.merge(dfquant, dfFund, on = 'Key')
+    df = pd.merge(df, dfRating, on = 'Ticker')
+    
+    df['Date'] = pd.to_datetime(df['Date'])
+    
+    
+    #earnings_cal = pd.read_csv('Earnings_Calendar.csv')
+    df['datekey'] = df['Ticker'] + df.Date.astype('str')
+    earnings_cal['datekey'] = earnings_cal['Ticker'] + earnings_cal.report_date.astype('str')
+
+    earnings_cal['E'] = 1
+    earnings_cal = earnings_cal[['E', 'datekey']]
+    df = df.merge(earnings_cal, how = 'left', on = 'datekey')
+    df['E'] = df.E.fillna(0)
+    
+    
+    df['PE_Ratio'] = df.SMA/df.eps
+    df.PE_Ratio = df.PE_Ratio.replace([np.inf, -np.inf], 0)
+
+    AverageSectorPE = pd.DataFrame(df.groupby('Sector')['PE_Ratio'].mean()).reset_index()
+    AverageSectorPE.columns = ['Sector', 'AverageSectorPE']
+    df = pd.merge(df,AverageSectorPE, on = 'Sector')
+    df['Relative_PE'] = (df.PE_Ratio - df.AverageSectorPE) / df.AverageSectorPE
+    df['Sales_Ratio'] = df.SMA/ (df.Sales/df.Shares)
+    df.Sales_Ratio = df.Sales_Ratio.replace([np.inf, -np.inf], 0)
+
+    AverageSectorSR = pd.DataFrame(df.groupby('Sector')['Sales_Ratio'].mean()).reset_index()
+    AverageSectorSR.columns = ['Sector', 'AverageSectorSR']
+    df = pd.merge(df,AverageSectorSR, on = 'Sector')
+    df['Relative_SR'] = (df.Sales_Ratio - df.AverageSectorSR) / df.AverageSectorSR
+    df['Relative_SR'] = df['Relative_SR'].fillna(0)
+    df['Relative_PE'] = df['Relative_PE'].fillna(0)
+    df['month'] = pd.DatetimeIndex(df['Date']).month
+    
+    df['E_Season'] = 0
+    stocks = df.Ticker.value_counts().index
+    for t in stocks:
+        x = 0
+        y = 0
+        e = df.loc[df['Ticker'] == t, 'E'].tolist()
+        szn = []
+        szn = np.zeros(len(e))
+
+        while x < (len(e)):
+
+            if x < (len(e)-7):
+
+                if e[x] == 1:
+                    szn[x:x+7] = 1
+
+                #else:
+                    #szn[x] = 0
+            x = x + 1
+
+        while y < (len(e)):
+
+            if y > 7:
+
+                if e[y] == 1:
+                    szn[y-6:y] = 1
+                #else:
+                 #   szn[y] = 0
+            y = y + 1
+
+        df.loc[df['Ticker'] == t, 'E_Season'] = szn
+    
+    return df
+
+
+
+
+def future(df):
+    stocks = df.Ticker.value_counts().index
+    
+    data = df.dropna()
+    
+    data['Five_Day'] = 0
+    data['Thirty_Day'] = 0
+    data['Sixty_Day'] = 0
+    data['Five_Day_avg'] = 0
+    data['Thirty_Day_avg'] = 0
+    data['Sixty_Day_avg'] = 0
+    
+    for interval in stocks:
+         
+        Five_Day_Obs = []
+        thirty_Day_Obs = []
+        sixty_Day_Obs = []
+        five_day_avg = []
+        thirty_day_avg = []
+        sixty_day_avg = []
+        
+        x = 0
+        
+        close_prices = data.loc[data['Ticker'] == interval, 'Close'].tolist()
+        
+    
+        while x < (len(close_prices)):
+            if x < (len(close_prices)-5):
+                if ((close_prices[x+1] + close_prices[x+2] + close_prices[x+3] + close_prices[x+4] + close_prices[x+5])/5) > close_prices[x]:
+                    Five_Day_Obs.append(1)
+                    five_day_avg.append((close_prices[x+1] + close_prices[x+2] + close_prices[x+3] + close_prices[x+4] + close_prices[x+5])/5)
+                    #print(close_prices[x+1])
+                else:
+                    Five_Day_Obs.append(0)
+                    five_day_avg.append((close_prices[x+1] + close_prices[x+2] + close_prices[x+3] + close_prices[x+4] + close_prices[x+5])/5)
+            else:
+                Five_Day_Obs.append(0)
+                five_day_avg.append(0)
+            x+=1
+        y = 0
+        
+        while y < (len(close_prices)):
+            if y < (len(close_prices)-30):
+                ThirtyDayCalc = 0
+                y2 = 1
+                while y2 < 31:
+                    ThirtyDayCalc = ThirtyDayCalc + close_prices[y+y2]
+                    y2 += 1
+                if (ThirtyDayCalc/30) > close_prices[y]:
+                    thirty_Day_Obs.append(1)
+                    thirty_day_avg.append(ThirtyDayCalc/30)
+                else:
+                    thirty_Day_Obs.append(0)
+                    thirty_day_avg.append(ThirtyDayCalc/30)
+            else:
+                thirty_Day_Obs.append(0)
+                thirty_day_avg.append(0)
+            y+=1
+        z = 0
+       
+        while z < (len(close_prices)):
+            if z < (len(close_prices)-60):
+                SixtyDayCalc = 0
+                z2 = 1
+                while z2 < 61:
+                    SixtyDayCalc = SixtyDayCalc + close_prices[z+z2]
+                    z2 += 1
+                if (SixtyDayCalc/60) > close_prices[z]:
+                    sixty_Day_Obs.append(1)
+                    sixty_day_avg.append(SixtyDayCalc/60)
+                else:
+                    sixty_Day_Obs.append(0)
+                    sixty_day_avg.append(SixtyDayCalc/60)
+            else:
+                sixty_Day_Obs.append(0)
+                sixty_day_avg.append(0)
+            z+=1
+            
+        data.loc[data['Ticker'] == interval, 'Five_Day'] = Five_Day_Obs
+        data.loc[data['Ticker'] == interval, 'Thirty_Day'] = thirty_Day_Obs
+        data.loc[data['Ticker'] == interval, 'Sixty_Day'] = sixty_Day_Obs
+        data.loc[data['Ticker'] == interval, 'Five_Day_avg'] = five_day_avg
+        data.loc[data['Ticker'] == interval, 'Thirty_Day_avg'] = thirty_day_avg
+        data.loc[data['Ticker'] == interval, 'Sixty_Day_avg'] = sixty_day_avg
+        
+    return data
+
+
+def EMASignals(data):
+    data['EMA'] = 0
+    data['Signal'] = 0
+    stocks = data.Ticker.value_counts().index
+    
+    
+    for t in stocks:
+        close = data.loc[data['Ticker'] == t,'Close']
+        data.loc[data['Ticker'] == t, 'EMA'] = EMA(close,5)
+        
+        short = (data.SMA.shift(1) < data.EMA.shift(1)) & (data.SMA > data.EMA)
+        long =  (data.SMA.shift(1) > data.EMA.shift(1)) & (data.SMA < data.EMA)
+        
+        data.loc[(data.Ticker == t) & short, 'Signal'] = -1
+        data.loc[(data.Ticker == t) & long, 'Signal'] = 1
+        data['SignalVar'] = data.EMA/data.SMA
+        
+    return data
+
